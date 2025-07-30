@@ -5,28 +5,13 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import time
-import urllib.parse  # Para codificar correctamente el término de búsqueda
-
-# Pedir al usuario el término de búsqueda
-termino_busqueda = input("¿Qué producto deseas buscar en Amazon y MediaMarkt?: ")
-termino_codificado_amazon = urllib.parse.quote_plus(termino_busqueda) #quote plus transforma lo que escribes en lenguaje html , _ -> +
-termino_codificado_mediamarkt = urllib.parse.quote_plus(termino_busqueda) 
-
-# Configurar Chrome
-options = Options()
-options.add_argument("--headless")  # Quita comentario si no quieres ver el navegador
-options.add_argument("--no-sandbox") # (Contenedres,CI)
-options.add_argument("--disable-dev-shm-usage") 
-
-service = Service()
-driver = webdriver.Chrome(service=service, options=options)
+import urllib.parse
 
 # =========================
 #  FUNCIONES AUXILIARES (MEDIAMARKT)
 # =========================
 
-def aceptar_cookies_mm(driver, timeout=6): #Las cookies nos suelen tocar los cojones, las aceptamos para que nos dejen buscar con libertad
-    """Intenta aceptar el banner de cookies de MediaMarkt si aparece."""
+def aceptar_cookies_mm(driver, timeout=6):
     try:
         posibles_botones = [
             (By.XPATH, "//button[contains(., 'Aceptar') or contains(., 'ACEPTAR') or contains(., 'Aceptar todo') or contains(., 'Aceptar todas')]"),
@@ -37,7 +22,7 @@ def aceptar_cookies_mm(driver, timeout=6): #Las cookies nos suelen tocar los coj
         while time.time() < fin:
             for by, xp in posibles_botones:
                 try:
-                    btn = WebDriverWait(driver, 1).until(EC.element_to_be_clickable((by, xp))) #webdriverWait sirve para hacer click al boton
+                    btn = WebDriverWait(driver, 1).until(EC.element_to_be_clickable((by, xp)))
                     btn.click()
                     return
                 except:
@@ -47,27 +32,19 @@ def aceptar_cookies_mm(driver, timeout=6): #Las cookies nos suelen tocar los coj
         pass
 
 def _normaliza_precio(txt: str) -> str:
-    return (txt or "").replace("\xa0", " ").replace("&nbsp;", " ").strip() #Los precios tienen el mismo problema que amazon que sale el &nbs, lo que hace la funcion es reemplazarlo y reescribirlo
+    return (txt or "").replace("\xa0", " ").replace("&nbsp;", " ").strip()
 
 def extraer_precios_mediamarkt(price_box):
-    """
-    Devuelve (precio_actual, precio_original, hay_oferta) a partir del contenedor
-    <div data-test="mms-price">…</div>
-    - Si hay oferta: precio_actual = rebajado, precio_original = tachado.
-    - Si no hay oferta: ambos iguales al único precio mostrado.
-    """
-    #(precio original)
     strike_blocks = price_box.find_elements(
         By.XPATH, ".//div[starts-with(@data-test,'mms-strike-price-type')]"
     )
 
-    def _primer_span_con_euro(scope): #Para buscar el precio, Separamos al estar precio tachado y precio oferta
+    def _primer_span_con_euro(scope):
         spans = scope.find_elements(By.XPATH, ".//span[contains(normalize-space(.),'€') or contains(., '€')]")
         for sp in spans:
             txt = _normaliza_precio(sp.text)
             if "€" in txt and txt:
                 return txt
-        # Fallback: algunos precios duplican valor en aria-hidden
         spans = scope.find_elements(By.XPATH, ".//span[@aria-hidden='true']")
         for sp in spans:
             txt = _normaliza_precio(sp.text)
@@ -75,8 +52,7 @@ def extraer_precios_mediamarkt(price_box):
                 return txt
         return ""
 
-    if strike_blocks: #Comprueba si existen dos bloques (oferta y original)
-        # Hay oferta: extraer original (tachado) y actual (rojo)
+    if strike_blocks:
         precio_original = _primer_span_con_euro(strike_blocks[0]) or "Precio no disponible"
         candidatos_actual = price_box.find_elements(
             By.XPATH, ".//span[contains(., '€')][not(ancestor::div[starts-with(@data-test,'mms-strike-price-type')])]"
@@ -87,7 +63,7 @@ def extraer_precios_mediamarkt(price_box):
             if "€" in txt and txt:
                 precio_actual = txt
                 break
-        if not precio_actual: #En caso no de encontrar ninguno...
+        if not precio_actual:
             precio_actual = _primer_span_con_euro(price_box) or "Precio no disponible"
         return (precio_actual, precio_original, True)
     else:
@@ -97,38 +73,36 @@ def extraer_precios_mediamarkt(price_box):
 # =========================
 #  AMAZON
 # =========================
-def scrape_amazon():
+def scrape_amazon(driver, termino_busqueda):
+    termino_codificado_amazon = urllib.parse.quote_plus(termino_busqueda)
     url = f"https://www.amazon.es/s?k={termino_codificado_amazon}"
     driver.get(url)
-    time.sleep(1)  
+    time.sleep(1)
 
     productos = driver.find_elements(By.XPATH, "//div[@data-component-type='s-search-result']")
     encontrados = 0
     print(f"\nPrimeras 3 búsquedas de Amazon para '{termino_busqueda}':")
     with open("productos.txt", "w", encoding="utf-8") as f:
-        f.write(f"Amazon\n") #Escribimos en la notita
+        f.write("Amazon\n")
         print(url)
-        for producto in productos: #Recorremos 3 primeros productos
+        for producto in productos:
             if encontrados >= 3:
                 break
             try:
-                ##Nombre
                 nombre = producto.find_element(By.XPATH, ".//h2//span").text.strip()
-            
-                ##Precio
                 try:
                     precio_element = producto.find_element(By.XPATH, ".//span[@class='a-price']")
                     precio = precio_element.find_element(By.XPATH, ".//span[@class='a-offscreen']").get_attribute("innerHTML").replace("&nbsp;", " ").strip()
-                except: #En caso que no se encuentre el precio se crea uno por uno
+                except:
                     try:
                         parte_entera = producto.find_element(By.XPATH, ".//span[@class='a-price-whole']").text.strip()
                         parte_decimal = producto.find_element(By.XPATH, ".//span[@class='a-price-fraction']").text.strip()
                         simbolo = producto.find_element(By.XPATH, ".//span[@class='a-price-symbol']").text.strip()
                         simbolo_limpio = simbolo.replace("&nbsp;", " ")
-                        precio = f"{simbolo}{parte_entera},{parte_decimal}"
+                        precio = f"{simbolo_limpio}{parte_entera},{parte_decimal}"
                     except:
                         precio = "Precio no disponible"
-                
+
                 print(f"{nombre} -> {precio}")
                 f.write(f"{nombre} -> {precio}\n")
                 encontrados += 1
@@ -137,17 +111,16 @@ def scrape_amazon():
                 continue
 
 # =========================
-#  MEDIAMARKT (CON OFERTAS)
+#  MEDIAMARKT
 # =========================
-def scrape_mediamarkt():
+def scrape_mediamarkt(driver, termino_busqueda):
+    termino_codificado_mediamarkt = urllib.parse.quote_plus(termino_busqueda)
     url = f"https://www.mediamarkt.es/es/search.html?query={termino_codificado_mediamarkt}"
     driver.get(url)
 
-    # Aceptar cookies si bloquean
     aceptar_cookies_mm(driver)
 
     try:
-        # Espera a que aparezcan títulos de productos (selector estable)
         titulos = WebDriverWait(driver, 10).until(
             EC.presence_of_all_elements_located((By.XPATH, "//p[@data-test='product-title']"))
         )
@@ -159,13 +132,9 @@ def scrape_mediamarkt():
     print(f"\nPrimeras 3 búsquedas de MediaMarkt para '{termino_busqueda}':")
     with open("productos.txt", "a", encoding="utf-8") as f:
         f.write("\nMediaMarkt\n")
-
-        # Tomamos los 3 primeros títulos y desde ahí localizamos el precio
         for titulo_el in titulos[:3]:
             try:
                 nombre = titulo_el.text.strip()
-
-                # Subir al contenedor de la tarjeta que contenga el bloque de precio
                 try:
                     card = titulo_el.find_element(
                         By.XPATH,
@@ -174,27 +143,89 @@ def scrape_mediamarkt():
                 except:
                     card = titulo_el.find_element(By.XPATH, "./ancestor::*[1]")
 
-                # Precio dentro del contenedor de precio (manejo de oferta u original)
                 try:
                     price_box = card.find_element(By.XPATH, ".//div[@data-test='mms-price']")
                     precio_actual, precio_original, hay_oferta = extraer_precios_mediamarkt(price_box)
                 except:
                     precio_actual, precio_original, hay_oferta = ("Precio no disponible", "Precio no disponible", False)
 
-                # Mostrar/guardar según haya oferta
                 if hay_oferta:
                     print(f"{nombre} -> {precio_actual} (antes: {precio_original})")
                     f.write(f"{nombre} -> {precio_actual} (antes: {precio_original})\n")
                 else:
                     print(f"{nombre} -> {precio_original}")
                     f.write(f"{nombre} -> {precio_original}\n")
-
             except Exception as e:
                 print("Error en MediaMarkt:", repr(e))
                 continue
 
-# Ejecutar ambas funciones
-scrape_amazon()
-scrape_mediamarkt()
 
-driver.quit()
+#=====================
+#  FNAC
+#=====================
+def scrape_fnac(driver,termino_busqueda):
+    print("Por implementar")
+
+
+#==================
+#  MENÚ
+#==================
+
+tiendas_fisicas = ["Amazon", "Mediamarkt"]
+tiendas_digitales = []
+
+def menu(driver):
+    while True:
+        print("\nSeleccione tu opción:")
+        print("1. Juegos físicos")
+        print("2. Juegos digitales")
+        print("3. ¿Cuáles son las tiendas?")
+        print("0. Salir")
+
+        opcion = input("Ingrese una opción: ")
+
+        if opcion == "1":
+            termino_busqueda = input("¿Qué producto deseas buscar en Amazon y MediaMarkt?: ").strip()
+            if not termino_busqueda:
+                print("No escribiste nada. Intenta de nuevo.")
+                continue
+            scrape_amazon(driver, termino_busqueda) #Aqui nos vamos a Amazon
+            scrape_mediamarkt(driver, termino_busqueda)#MediaMarkt
+            scrape_fnac(driver,termino_busqueda)
+
+        elif opcion == "2":
+            print("\n\nHas elegido Juegos digitales:")
+            print("No implementado aún")
+
+        elif opcion == "3":
+            print("Has elegido las tiendas")
+            print("\nTiendas físicas:")
+            for tienda in tiendas_fisicas:
+                print(f"- {tienda}")
+            print("\nTiendas digitales:")
+            for tienda2 in tiendas_digitales:
+                print(f"- {tienda2}")
+
+        elif opcion == "0":
+            print("Saliendo del programa...")
+            break
+        else:
+            print("Opción inválida, intenta de nuevo.")
+
+#==================
+#  MAIN
+#==================
+
+if __name__ == "__main__":
+    options = Options()
+    options.add_argument("--headless")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+
+    service = Service()
+    driver = webdriver.Chrome(service=service, options=options)
+    #Todo lo de aqui es para activar el servicio con Google antes de la busqueda
+    try:
+        menu(driver) #Activamos el menu con el 
+    finally:
+        driver.quit()
